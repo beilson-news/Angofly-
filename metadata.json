@@ -1,0 +1,6 @@
+{
+  "name": "ANGOFLY",
+  "description": "ANGOFLY IPTV Premium - Transmissão de canais ao vivo, filmes, séries, gestão de playlists M3U, EPG e pagamentos",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
