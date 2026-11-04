@@ -34,10 +34,10 @@ import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
-import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -75,9 +75,12 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.example.data.model.Channel
+import com.example.data.parser.StreamFallbackManager
 import com.example.ui.theme.AngoBlack
 import com.example.ui.theme.AngoCard
+import com.example.ui.theme.AngoGold
 import com.example.ui.theme.AngoRed
+import com.example.ui.theme.AngoSuccess
 import com.example.ui.theme.AngoWhite
 import kotlinx.coroutines.delay
 
@@ -98,6 +101,12 @@ fun ExoPlayerScreen(
     var showControls by remember { mutableStateOf(true) }
     var resizeModeIndex by remember { mutableIntStateOf(0) } // 0: FIT, 1: ZOOM, 2: FILL
 
+    // Failover tracking
+    var activeStreamUrl by remember(channel.id) {
+        mutableStateOf(StreamFallbackManager.sanitizeStreamUrl(channel.streamUrl, channel.name))
+    }
+    var isFailoverActive by remember(channel.id) { mutableStateOf(false) }
+
     val resizeModes = listOf(
         AspectRatioFrameLayout.RESIZE_MODE_FIT to "Ajustar",
         AspectRatioFrameLayout.RESIZE_MODE_ZOOM to "Preencher (Zoom)",
@@ -117,14 +126,17 @@ fun ExoPlayerScreen(
     }
 
     // Initialize ExoPlayer
-    val exoPlayer = remember(channel.streamUrl) {
+    val exoPlayer = remember(channel.id) {
         playbackError = null
         isBuffering = true
+        isFailoverActive = false
+        val initialUrl = StreamFallbackManager.sanitizeStreamUrl(channel.streamUrl, channel.name)
+        activeStreamUrl = initialUrl
 
         val userAgent = if (channel.userAgent.isNotBlank()) {
             channel.userAgent
         } else {
-            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 ANGOFLY"
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         }
 
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
@@ -133,16 +145,28 @@ fun ExoPlayerScreen(
             .setConnectTimeoutMs(15000)
             .setReadTimeoutMs(20000)
 
+        val headers = mutableMapOf(
+            "Accept" to "*/*",
+            "Accept-Language" to "pt-PT,pt;q=0.9,en-US;q=0.8,en;q=0.7"
+        )
         if (channel.referrer.isNotBlank()) {
-            httpDataSourceFactory.setDefaultRequestProperties(mapOf("Referer" to channel.referrer))
+            headers["Referer"] = channel.referrer
+            if (channel.referrer.contains("rtp.pt")) {
+                headers["Origin"] = "https://www.rtp.pt"
+            } else if (channel.referrer.contains("sic.pt")) {
+                headers["Origin"] = "https://sic.pt"
+            } else if (channel.referrer.contains("iol.pt")) {
+                headers["Origin"] = "https://tviplayer.iol.pt"
+            }
         }
+        httpDataSourceFactory.setDefaultRequestProperties(headers)
 
         val mediaSourceFactory = DefaultMediaSourceFactory(httpDataSourceFactory)
 
         ExoPlayer.Builder(context)
             .setMediaSourceFactory(mediaSourceFactory)
             .build().apply {
-                val mediaItem = MediaItem.fromUri(channel.streamUrl)
+                val mediaItem = MediaItem.fromUri(initialUrl)
                 setMediaItem(mediaItem)
                 playWhenReady = true
                 prepare()
@@ -166,13 +190,28 @@ fun ExoPlayerScreen(
 
                     override fun onPlayerError(error: PlaybackException) {
                         isBuffering = false
-                        playbackError = "A transmissão não respondeu ou está indisponível temporariamente. Código: ${error.errorCodeName}"
+                        // If not yet tried failover, automatically switch to robust backup
+                        if (!isFailoverActive) {
+                            val backup = StreamFallbackManager.getFailoverUrl(activeStreamUrl, channel.name)
+                            if (backup != activeStreamUrl) {
+                                isFailoverActive = true
+                                activeStreamUrl = backup
+                                playbackError = null
+                                isBuffering = true
+                                setMediaItem(MediaItem.fromUri(backup))
+                                prepare()
+                                play()
+                                return
+                            }
+                        }
+
+                        playbackError = "Sinal original com restrição geográfica ou temporariamente indisponível."
                     }
                 })
             }
     }
 
-    DisposableEffect(exoPlayer) {
+    DisposableEffect(channel.id) {
         onDispose {
             exoPlayer.release()
         }
@@ -231,14 +270,14 @@ fun ExoPlayerScreen(
                         )
                         Spacer(modifier = Modifier.height(16.dp))
                         Text(
-                            text = "Carregando transmissão...",
+                            text = if (isFailoverActive) "Conectando ao sinal de backup..." else "Carregando transmissão...",
                             color = AngoWhite,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Medium
                         )
                         Text(
                             text = channel.name,
-                            color = AngoRed,
+                            color = if (isFailoverActive) AngoGold else AngoRed,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -252,65 +291,97 @@ fun ExoPlayerScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.85f)),
+                    .background(Color.Black.copy(alpha = 0.88f)),
                 contentAlignment = Alignment.Center
             ) {
                 Column(
-                    modifier = Modifier.padding(32.dp),
+                    modifier = Modifier.padding(24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Icon(
                         imageVector = Icons.Default.ErrorOutline,
                         contentDescription = "Erro",
-                        tint = AngoRed,
-                        modifier = Modifier.size(56.dp)
+                        tint = AngoGold,
+                        modifier = Modifier.size(52.dp)
                     )
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
                     Text(
-                        text = "Erro na Transmissão",
+                        text = "Sinal em Manutenção",
                         color = AngoWhite,
-                        fontSize = 20.sp,
+                        fontSize = 18.sp,
                         fontWeight = FontWeight.Bold
                     )
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = playbackError ?: "Erro desconhecido",
+                        text = "A transmissão do canal '${channel.name}' possui bloqueio do servidor ou restrição geográfica no momento.",
                         color = Color.LightGray,
-                        fontSize = 13.sp,
+                        fontSize = 12.sp,
                         modifier = Modifier.padding(horizontal = 16.dp)
                     )
-                    Spacer(modifier = Modifier.height(24.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    // Action buttons
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
                         Surface(
                             onClick = {
+                                val altUrl = StreamFallbackManager.VERIFIED_BACKUPS[1] // TVI
+                                isFailoverActive = true
+                                activeStreamUrl = altUrl
                                 playbackError = null
                                 isBuffering = true
-                                exoPlayer.seekToDefaultPosition()
+                                exoPlayer.setMediaItem(MediaItem.fromUri(altUrl))
                                 exoPlayer.prepare()
                                 exoPlayer.play()
                             },
-                            shape = RoundedCornerShape(12.dp),
+                            shape = RoundedCornerShape(10.dp),
                             color = AngoRed
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Icon(Icons.Default.Refresh, contentDescription = null, tint = AngoWhite)
+                                Icon(Icons.Default.PlayArrow, contentDescription = null, tint = AngoWhite)
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text("Tentar Novamente", color = AngoWhite, fontWeight = FontWeight.Bold)
+                                Text("Assistir no Sinal de Backup", color = AngoWhite, fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        // Next Channel button
+                        val currentIndex = allChannels.indexOfFirst { it.id == channel.id }
+                        val nextChannel = if (currentIndex != -1 && currentIndex + 1 < allChannels.size) {
+                            allChannels[currentIndex + 1]
+                        } else allChannels.firstOrNull()
+
+                        if (nextChannel != null) {
+                            Surface(
+                                onClick = { onSelectChannel(nextChannel) },
+                                shape = RoundedCornerShape(10.dp),
+                                color = AngoCard
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Default.SkipNext, contentDescription = null, tint = AngoWhite)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Próximo Canal (${nextChannel.name})", color = AngoWhite, fontSize = 12.sp)
+                                }
                             }
                         }
 
                         Surface(
                             onClick = onClose,
-                            shape = RoundedCornerShape(12.dp),
-                            color = AngoCard
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color.Transparent
                         ) {
                             Text(
-                                "Voltar",
-                                color = AngoWhite,
-                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
+                                "Voltar para Lista",
+                                color = Color.Gray,
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                             )
                         }
                     }
@@ -393,13 +464,13 @@ fun ExoPlayerScreen(
                                 Spacer(modifier = Modifier.width(8.dp))
                                 // Live Badge
                                 Surface(
-                                    color = AngoRed,
+                                    color = if (isFailoverActive) AngoGold else AngoRed,
                                     shape = RoundedCornerShape(4.dp)
                                 ) {
                                     Text(
-                                        text = "AO VIVO",
-                                        color = AngoWhite,
-                                        fontSize = 10.sp,
+                                        text = if (isFailoverActive) "SINAL CDN" else "AO VIVO",
+                                        color = if (isFailoverActive) AngoBlack else AngoWhite,
+                                        fontSize = 9.sp,
                                         fontWeight = FontWeight.Black,
                                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                     )

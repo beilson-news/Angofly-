@@ -292,7 +292,9 @@ fun HomeScreen(
                             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                 Button(
                                     onClick = {
-                                        val firstChannel = allChannels.firstOrNull { it.name.contains("RTP 1", ignoreCase = true) }
+                                        val firstChannel = allChannels.firstOrNull { it.name.contains("TVI", ignoreCase = true) }
+                                            ?: allChannels.firstOrNull { it.name.contains("Zimbo", ignoreCase = true) }
+                                            ?: allChannels.firstOrNull { it.name.contains("CNN", ignoreCase = true) }
                                             ?: allChannels.firstOrNull()
                                         if (firstChannel != null) onPlayChannel(firstChannel)
                                     },

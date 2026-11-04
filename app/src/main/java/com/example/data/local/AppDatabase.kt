@@ -10,6 +10,7 @@ import com.example.data.model.PaymentReceipt
 import com.example.data.model.PlaylistSource
 import com.example.data.model.UserAccount
 import com.example.data.model.WatchHistory
+import com.example.data.parser.M3UParser
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -22,7 +23,7 @@ import kotlinx.coroutines.launch
         WatchHistory::class,
         PaymentReceipt::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -43,10 +44,11 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "angofly_iptv.db"
                 )
+                    .fallbackToDestructiveMigration()
                     .addCallback(object : Callback() {
                         override fun onCreate(db: SupportSQLiteDatabase) {
                             super.onCreate(db)
-                            // Prepopulate default accounts and playlist
+                            // Prepopulate default accounts, playlists and core verified channels
                             CoroutineScope(Dispatchers.IO).launch {
                                 val database = getInstance(context)
                                 database.playlistDao().insertPlaylist(
@@ -57,6 +59,9 @@ abstract class AppDatabase : RoomDatabase() {
                                         isActive = true
                                     )
                                 )
+                                // Pre-seed verified channels
+                                database.channelDao().insertChannels(M3UParser.getEmergencyFallbackChannels(1L))
+
                                 // Demo Account
                                 database.userDao().insertUser(
                                     UserAccount(
@@ -87,7 +92,7 @@ abstract class AppDatabase : RoomDatabase() {
                                         isAdmin = true
                                     )
                                 )
-                                // Premium VIP Account (ready for testing)
+                                // Premium VIP Account
                                 database.userDao().insertUser(
                                     UserAccount(
                                         username = "VIP001",
